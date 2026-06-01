@@ -1,39 +1,29 @@
 # extractor.py
 # The actual scraping/extraction logic — JavaScript that runs inside the browser
 # This is the "bs4 equivalent" — it parses the page content and extracts metrics
-#
-# Called by scraper.py via: driver.execute_script(EXTRACT_JS)
 
-# ---------------------------------------------------------------------------
-# JavaScript extraction code (same logic as console_scraper.js)
-# This gets injected into the browser by Selenium's execute_script()
-# ---------------------------------------------------------------------------
 EXTRACT_JS = """
-// --- Helper: parse numbers like "1,124,624" or "17M" or "1.128.112" ---
 function parseNum(text) {
-    if (!text) return 0;
+    if (!text) return null;
     text = text.trim();
-
+    
     // Handle K/M/B suffixes (e.g., "17M", "2.5K")
     var suffixMatch = text.match(/^([\\d.,]+)\\s*([KMB])$/i);
     if (suffixMatch) {
-        var num = parseFloat(suffixMatch[1].replace(/,/g, ''));
+        // Convert any comma to dot for parsing (e.g. 1,5M -> 1.5)
+        var numStr = suffixMatch[1].replace(/,/g, '.');
+        var num = parseFloat(numStr);
         var mult = { K: 1000, M: 1000000, B: 1000000000 }[suffixMatch[2].toUpperCase()];
         return num * mult;
     }
-
-    // Detect European format: "1.128.112" (dots as thousands, no comma)
-    if (/^\\d{1,3}(\\.\\d{3}){2,}$/.test(text)) {
-        return parseInt(text.replace(/\\./g, ''), 10);
-    }
-
-    // Standard format — commas are thousands separators
-    return parseFloat(text.replace(/,/g, '')) || 0;
+    
+    // Standard raw numbers are integers (posts, followers). 
+    // We can safely remove all commas and dots.
+    var cleanText = text.replace(/[.,]/g, '');
+    var res = parseInt(cleanText, 10);
+    return isNaN(res) ? null : res;
 }
 
-// --- Helper: find value by DOM label (most reliable for following/posts) ---
-// Scans every element on the page looking for a label like "following",
-// then checks sibling elements for a number
 function findByLabel(labelText) {
     var allEls = document.querySelectorAll('*');
     for (var i = 0; i < allEls.length; i++) {
@@ -56,8 +46,6 @@ function findByLabel(labelText) {
     return null;
 }
 
-// --- Helper: find value from raw text (NUMBER before LABEL) ---
-// Searches the full page text for patterns like "1,124,624\\nFollowers"
 function findBeforeLabel(label) {
     var allText = document.body.innerText;
     var regex = new RegExp('([\\\\d.,]+[KMB]?)\\\\s*\\\\n\\\\s*' + label, 'i');
@@ -65,96 +53,118 @@ function findBeforeLabel(label) {
     return match ? match[1] : null;
 }
 
-// --- Helper: extract daily growth from "Average followers per day" ---
 function findDailyGrowth() {
     var allText = document.body.innerText;
     var match = allText.match(/([-+]?[\\d.,]+)\\s*\\n\\s*Average followers per day/i);
-    return match ? parseNum(match[1]) : 0;
+    return match ? parseNum(match[1]) : null;
 }
 
-// --- Extract each metric using the best method per field ---
-// Followers: regex (label_scan returns European format which is less reliable)
-var followersRaw = findBeforeLabel('Followers');
-var followers = parseNum(followersRaw);
+function wrap(val) {
+    if (val === null || val === undefined || isNaN(val)) {
+        return { value: null, status: "missing" };
+    }
+    return { value: val, status: "ok" };
+}
 
-// Following & Posts: DOM label scan (regex grabs weekly changes by mistake)
-var followingRaw = findByLabel('following');
-var following = parseNum(followingRaw);
+function extractProfile() {
+    var followersRaw = findBeforeLabel('Followers');
+    var followers = parseNum(followersRaw);
+    var followingRaw = findByLabel('following');
+    var following = parseNum(followingRaw);
+    var postsRaw = findByLabel('post');
+    var postsCount = parseNum(postsRaw);
+    var username = window.location.pathname.split('/').pop();
+    
+    return {
+        username: { value: username, status: "ok" },
+        followers: wrap(followers),
+        following: wrap(following),
+        posts_count: wrap(postsCount)
+    };
+}
 
-var postsRaw = findByLabel('post');
-var postsCount = parseNum(postsRaw);
+function extractEngagement(followers) {
+    var avgLikesRaw = findByLabel('avg like') || findBeforeLabel('Avg likes');
+    var avgLikes = parseNum(avgLikesRaw);
+    var avgCommentsRaw = findByLabel('avg comment') || findBeforeLabel('Avg comments');
+    var avgComments = parseNum(avgCommentsRaw);
+    
+    var engagementRate = null;
+    if (followers && followers > 0 && avgLikes !== null && avgComments !== null) {
+        engagementRate = Math.round(((avgLikes + avgComments) / followers) * 10000) / 100;
+    }
+    
+    return {
+        avg_likes: wrap(avgLikes),
+        avg_comments: wrap(avgComments),
+        engagement_rate: wrap(engagementRate)
+    };
+}
 
-// Avg Likes & Comments: both methods agree, try label first then regex
-var avgLikesRaw = findByLabel('avg like') || findBeforeLabel('Avg likes');
-var avgLikes = parseNum(avgLikesRaw);
+function extractGrowth(followers) {
+    var dailyGrowthRaw = findDailyGrowth();
+    var growthRate = null;
+    if (followers && followers > 0 && dailyGrowthRaw !== null) {
+        growthRate = Math.round((dailyGrowthRaw * 30 / followers) * 1000) / 10;
+    }
+    return {
+        daily_growth: wrap(dailyGrowthRaw),
+        growth_rate: wrap(growthRate)
+    };
+}
 
-var avgCommentsRaw = findByLabel('avg comment') || findBeforeLabel('Avg comments');
-var avgComments = parseNum(avgCommentsRaw);
+function extractHashtags() {
+    var allText = document.body.innerText;
+    var match = allText.match(/Top hashtags.*?\\n((?:#[\\w]+\\s*)+)/is);
+    var tags = [];
+    if (match && match[1]) {
+        tags = match[1].split(/[\\s\\n]+/).filter(function(t) { return t.startsWith('#'); });
+    }
+    if (tags.length > 0) {
+        return { top_hashtags: { value: tags, status: "ok" } };
+    }
+    return { top_hashtags: { value: null, status: "missing" } };
+}
 
-// Engagement Rate: calculated (site locks it behind login)
-var engagementRate = followers > 0
-    ? Math.round(((avgLikes + avgComments) / followers) * 10000) / 100
-    : 0;
-
-// Growth Rate: convert daily followers change to monthly percentage
-var dailyGrowth = findDailyGrowth();
-var growthRate = followers > 0
-    ? Math.round((dailyGrowth * 30 / followers) * 1000) / 10
-    : 0;
-
-// Username: from URL path
-var username = window.location.pathname.split('/').pop();
+var profile = extractProfile();
+var engagement = extractEngagement(profile.followers.value);
+var growth = extractGrowth(profile.followers.value);
+var hashtags = extractHashtags();
 
 return {
-    username: username,
-    followers: followers,
-    following: following,
-    posts_count: postsCount,
-    engagement_rate: engagementRate,
-    avg_likes: avgLikes,
-    avg_comments: avgComments,
-    growth_rate: growthRate,
-    authenticity_score: 0
+    profile_metrics: profile,
+    engagement_metrics: engagement,
+    growth_metrics: growth,
+    hashtag_metrics: hashtags,
+    authenticity_metrics: {
+        authenticity_score: { value: null, status: "unavailable" } // Site locks this behind login now
+    }
 };
 """
 
-
 def validate_result(data: dict) -> bool:
     """
-    Check if the extracted data looks valid.
-    Returns True if we got meaningful data, False if extraction failed.
+    Check if the extracted data looks valid structurally.
     """
-    if not data:
+    if not data or not isinstance(data, dict):
         return False
-    if data.get("followers", 0) == 0:
+    
+    prof = data.get("profile_metrics", {})
+    followers_obj = prof.get("followers", {})
+    val = followers_obj.get("value")
+    
+    if val is None or val == 0:
         return False
+        
     return True
-
 
 def clean_result(data: dict, username: str) -> dict:
     """
-    Post-process the raw JS result:
-    - Override username from the function argument (more reliable than URL parsing)
-    - Ensure all expected fields exist
+    Post-process the nested structure.
+    Override username from function argument.
     """
-    expected_fields = {
-        "username": username,
-        "followers": 0,
-        "following": 0,
-        "posts_count": 0,
-        "engagement_rate": 0,
-        "avg_likes": 0,
-        "avg_comments": 0,
-        "growth_rate": 0,
-        "authenticity_score": 0,
-    }
-
-    # Fill in any missing fields with defaults
-    for key, default in expected_fields.items():
-        if key not in data:
-            data[key] = default
-
-    # Always use the username we were asked to scrape
-    data["username"] = username
-
+    if "profile_metrics" in data:
+        if "username" in data["profile_metrics"]:
+            data["profile_metrics"]["username"]["value"] = username
+            data["profile_metrics"]["username"]["status"] = "ok"
     return data

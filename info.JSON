@@ -1,11 +1,56 @@
 {
-    "authenticity_score": 0,
-    "avg_comments": 7,
-    "avg_likes": 83,
-    "engagement_rate": 32.97,
-    "followers": 273,
-    "following": 220,
-    "growth_rate": 0,
-    "posts_count": 26,
-    "username": "i_am_anupdutta"
+    "authenticity_metrics": {
+        "authenticity_score": {
+            "status": "unavailable",
+            "value": null
+        }
+    },
+    "engagement_metrics": {
+        "avg_comments": {
+            "status": "ok",
+            "value": 112
+        },
+        "avg_likes": {
+            "status": "ok",
+            "value": 3957
+        },
+        "engagement_rate": {
+            "status": "ok",
+            "value": 9.92
+        }
+    },
+    "growth_metrics": {
+        "daily_growth": {
+            "status": "missing",
+            "value": null
+        },
+        "growth_rate": {
+            "status": "missing",
+            "value": null
+        }
+    },
+    "hashtag_metrics": {
+        "top_hashtags": {
+            "status": "missing",
+            "value": null
+        }
+    },
+    "profile_metrics": {
+        "followers": {
+            "status": "ok",
+            "value": 41032
+        },
+        "following": {
+            "status": "missing",
+            "value": null
+        },
+        "posts_count": {
+            "status": "missing",
+            "value": null
+        },
+        "username": {
+            "status": "ok",
+            "value": "swetajaiswalji"
+        }
+    }
 }
